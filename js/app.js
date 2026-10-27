@@ -42,6 +42,8 @@ const ICONS = {
   check: '<path d="M5 12l5 5 9-10"/>',
   timer: '<circle cx="12" cy="13" r="8"/><path d="M12 9v4l2.5 2M10 2h4"/>',
   refresh: '<path d="M20 11a8 8 0 1 0-2.3 5.7M20 4v7h-7"/>',
+  eye: '<path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/>',
+  eyeOff: '<path d="M3 3l18 18M10.6 5.1A10.4 10.4 0 0 1 12 5c6.5 0 10 7 10 7a17 17 0 0 1-3.2 4.2M6.6 6.6A17 17 0 0 0 2 12s3.5 7 10 7a10 10 0 0 0 5.4-1.6M9.9 9.9a3 3 0 0 0 4.2 4.2"/>',
 };
 const ic = (name) => `<svg viewBox="0 0 24 24" aria-hidden="true">${ICONS[name]}</svg>`;
 const PLAY = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg>';
@@ -1096,8 +1098,11 @@ routes.settings = async () => {
       <div id="stBox">${statusBox()}</div>
       <label class="field">Адрес скрипта (заканчивается на /exec)
         <input class="input" id="cUrl" value="${esc(cfg.url || '')}" placeholder="https://script.google.com/macros/s/…/exec" autocomplete="off" inputmode="url"></label>
-      <label class="field">Ключ доступа
-        <input class="input" id="cToken" value="${esc(cfg.token || '')}" autocomplete="off" placeholder="из Google Таблицы, лист «Настройки»"></label>
+      <label class="field" for="cToken">Ключ доступа</label>
+      <div class="input-row">
+        <input class="input secret" id="cToken" value="${esc(cfg.token || '')}" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="из Google Таблицы, лист «Настройки»">
+        <button class="icon-btn" id="cEye" type="button" aria-label="Показать ключ" aria-pressed="false" style="width:48px;height:48px">${ic('eye')}</button>
+      </div>
       <button class="btn" id="cSave">${ic('cloud')}Сохранить и проверить</button>
       <div class="grid2">
         <button class="btn ghost" id="cSync" ${sync.isConfigured() ? '' : 'disabled'}>${ic('upload')}Отправить</button>
@@ -1115,6 +1120,15 @@ routes.settings = async () => {
         </ol>
       </details>
     </section>
+    ${isStandalone() ? '' : `<section class="card stack">
+      <h2 class="h2">Приложение на телефоне</h2>
+      ${installPrompt ? `<button class="btn accent" id="installBtn">${ic('download')}Установить «Летопись»</button>` : ''}
+      <p class="small muted">${installPrompt ? 'Или вручную:' : 'Как поставить на главный экран:'}</p>
+      <ul class="steps">
+        <li><b>Android, Chrome:</b> меню ⋮ → «Добавить на главный экран» → «Установить». Если пишет «уже установлено» — выберите «Создать ярлык».</li>
+        <li><b>iPhone, Safari:</b> кнопка «Поделиться» → «На экран „Домой“».</li>
+      </ul>
+    </section>`}
     <section class="card stack">
       <h2 class="h2">Копия-файл</h2>
       <p class="small muted">Полная копия всех книг с обложками и голосом в одном файле. Можно хранить где угодно, хоть на флешке.</p>
@@ -1170,6 +1184,22 @@ routes.settings = async () => {
       toast(e.message, 5000);
       unbusy(btn);
     }
+  };
+  $('#cEye').onclick = () => {
+    const inp = $('#cToken');
+    const show = inp.classList.toggle('secret') === false;
+    $('#cEye').setAttribute('aria-pressed', show);
+    $('#cEye').setAttribute('aria-label', show ? 'Скрыть ключ' : 'Показать ключ');
+    $('#cEye').innerHTML = ic(show ? 'eyeOff' : 'eye');
+  };
+  const inst = $('#installBtn');
+  if (inst) inst.onclick = async () => {
+    if (!installPrompt) return;
+    installPrompt.prompt();
+    const choice = await installPrompt.userChoice.catch(() => null);
+    installPrompt = null;
+    if (choice && choice.outcome === 'accepted') toast('Готово! Ищите «Летопись» на главном экране');
+    route();
   };
   $('#exBtn').onclick = () => exportBackup($('#exBtn'));
   $('#imFile').onchange = (e) => importBackup(e.target.files && e.target.files[0]);
@@ -1233,6 +1263,18 @@ async function importBackup(file) {
   } catch (e) {
     toast('Не получилось загрузить: ' + e.message, 5000);
   }
+}
+
+// ===================== установка на телефон =====================
+let installPrompt = null;
+window.addEventListener('beforeinstallprompt', (e) => {
+  e.preventDefault();
+  installPrompt = e;
+  if (parseHash().name === 'settings') route();
+});
+window.addEventListener('appinstalled', () => { installPrompt = null; });
+function isStandalone() {
+  return window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true;
 }
 
 // ===================== запуск =====================
