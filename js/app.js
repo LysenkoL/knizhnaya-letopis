@@ -22,7 +22,7 @@ const FACES = [
 ];
 const BEAD_COLORS = ['#E35D6A', '#F2B33D', '#3E9C7B', '#4C6FD6', '#9A5BD3', '#E9853C', '#2BA3B5'];
 const COVER_COLORS = ['#3E7C6B', '#2D3E7A', '#B04A5A', '#8A6A2E', '#5B4A9E', '#2F6F8F', '#A0522D'];
-const SCRIPT_VERSION_NEEDED = 3;
+const SCRIPT_VERSION_NEEDED = 4;
 const BEAD_SECONDS = 300; // 5 минут = 1 бусинка
 const REC_MAX_SECONDS = 180;
 
@@ -351,7 +351,7 @@ function renderFind() {
     if (q.length < 2) return;
     const box = $('#results');
     box.innerHTML = '<div class="row"><span class="spinner"></span><span class="muted small">Ищу…</span></div>';
-    const list = await searchByTitle(q, sync.serverSearch);
+    const list = await searchByTitle(q);
     if (!list.length) { box.innerHTML = '<p class="muted small">Ничего не нашлось. Попробуйте другое написание или заполните вручную.</p>'; return; }
     box.innerHTML = list.map((x, i) => `
       <button type="button" class="result" data-i="${i}">
@@ -396,7 +396,7 @@ async function checkDuplicate() {
 
 async function findByIsbn(isbn) {
   view.innerHTML = `<div class="card empty"><span class="spinner"></span><p>Ищу книгу ${esc(isbn)}…</p>
-    <p class="small">${sync.isConfigured() ? 'Смотрю в каталогах библиотек и в Немецкой национальной библиотеке (через ваш Google-скрипт), это до 20 секунд.' : 'Подключите Google Drive в «Хранилище» — тогда будут находиться обложки немецких книг.'}</p></div>`;
+    <p class="small">${sync.isConfigured() ? 'Смотрю в каталогах немецких библиотек, Google Books и Open Library.' : 'Смотрю в каталогах немецких библиотек, Google Books и Open Library.'}</p></div>`;
   const res = await lookupIsbn(isbn, sync.serverLookup);
   Object.assign(draft, {
     stage: 'form', isbn, fromCatalog: res.found,
@@ -1102,7 +1102,7 @@ routes.settings = async () => {
     <section class="card stack">
       <h2 class="h2">Google Drive</h2>
       <div id="stBox">${statusBox()}</div>
-      ${sync.isConfigured() && (cfg.scriptVersion || 1) < SCRIPT_VERSION_NEEDED ? `<div class="status warn">Нужно обновить Google-скрипт: новая версия находит немецкие книги и их обложки. Обновите код скрипта, как в инструкции на GitHub, и нажмите «Сохранить и проверить».</div>` : ''}
+      ${sync.isConfigured() && (cfg.scriptVersion || 1) < SCRIPT_VERSION_NEEDED ? `<div class="status warn">Нужно обновить Google-скрипт до новой версии (вставить новый код и сделать «Новую версию» развёртывания). Обновите код скрипта, как в инструкции на GitHub, и нажмите «Сохранить и проверить».</div>` : ''}
       <label class="field">Адрес скрипта (заканчивается на /exec)
         <input class="input" id="cUrl" value="${esc(cfg.url || '')}" placeholder="https://script.google.com/macros/s/…/exec" autocomplete="off" inputmode="url"></label>
       <label class="field" for="cToken">Ключ доступа</label>

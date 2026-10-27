@@ -1,6 +1,6 @@
 // Поиск книги по ISBN (штрихкоду) и по названию.
-// Источники: ваш Google-скрипт (каталог lobid + Немецкая национальная библиотека DNB),
-// Google Books, Open Library. Обложки: DNB (через скрипт), Open Library, Google Books.
+// Источники: каталог немецких библиотек K10plus, Google Books, Open Library,
+// запасной — ваш Google-скрипт (DNB). Обложки: Open Library, Google Books или своё фото.
 
 const TIMEOUT = 9000;
 
@@ -37,9 +37,9 @@ export function normalizeIsbn(raw) {
   return null;
 }
 
-async function fetchWithTimeout(url, opts = {}) {
+async function fetchWithTimeout(url, opts = {}, ms = TIMEOUT) {
   const ctrl = new AbortController();
-  const t = setTimeout(() => ctrl.abort(), TIMEOUT);
+  const t = setTimeout(() => ctrl.abort(), ms);
   try {
     const r = await fetch(url, { ...opts, signal: ctrl.signal });
     if (!r.ok) return null;
@@ -104,22 +104,50 @@ async function fromOpenLibrary(isbn) {
   };
 }
 
-// Разбор записи lobid.org (используется, если сервер когда-то начнёт пускать браузеры).
-function lobidItem(x) {
-  const sub = (x.otherTitleInformation || [])[0];
-  const title = (x.title || '') + (sub && !/^(roman|erzählung|ein |eine |mit )/i.test(sub) ? ': ' + sub : '');
-  const contrib = x.contribution || [];
-  let authors = contrib.filter(c => /autor|verfasser/i.test((c.role && c.role.label) || ''));
-  if (!authors.length) authors = contrib;
-  const isbns = (x.isbn || []).map(normalizeIsbn).filter(Boolean);
-  return {
-    title: title.trim(),
-    author: authors.map(c => flipName(c.agent && c.agent.label)).filter(Boolean).join(', '),
-    pages: firstNumber(x.extent),
-    isbn: isbns[0] || '',
-    year: ((x.publication || [])[0] || {}).startDate || '',
-    cover: null,
-  };
+// K10plus — общий каталог немецких библиотек (GBV/SWB, около 80 млн записей).
+// Открытый интерфейс SRU, разрешает запросы прямо из браузера.
+const K10 = 'https://sru.k10plus.de/opac-de-627?version=1.1&operation=searchRetrieve&recordSchema=marcxml';
+
+function marcSub(df, code) {
+  const sf = Array.from(df.getElementsByTagNameNS('*', 'subfield')).find(x => x.getAttribute('code') === code);
+  return sf ? sf.textContent.trim() : '';
+}
+
+function marcRecord(rec) {
+  const fields = (tag) => Array.from(rec.getElementsByTagNameNS('*', 'datafield')).filter(d => d.getAttribute('tag') === tag);
+  const f245 = fields('245')[0];
+  if (!f245) return null;
+  let title = marcSub(f245, 'a');
+  const sub = marcSub(f245, 'b');
+  if (sub && !/^(roman|erzählung|ein |eine |mit )/i.test(sub)) title += ': ' + sub;
+  title = title.replace(/\s*[/:;,.]\s*$/, '').replace(/\s+/g, ' ').trim();
+  let authors = fields('100').map(d => flipName(marcSub(d, 'a')));
+  if (!authors.length) {
+    authors = fields('700').filter(d => /aut/.test(marcSub(d, '4')) || /verfasser/i.test(marcSub(d, 'e'))).map(d => flipName(marcSub(d, 'a')));
+  }
+  const isbn = fields('020').map(d => normalizeIsbn(marcSub(d, 'a'))).find(Boolean) || '';
+  const extent = fields('300').map(d => marcSub(d, 'a')).join(' ');
+  const yearField = fields('264')[0] || fields('260')[0];
+  const year = yearField ? (marcSub(yearField, 'c').match(/\d{4}/) || [''])[0] : '';
+  return { title, author: authors.filter(Boolean).join(', '), pages: firstNumber(extent), isbn, year, cover: null };
+}
+
+async function k10Query(cql, max) {
+  const r = await fetchWithTimeout(`${K10}&maximumRecords=${max}&query=${encodeURIComponent(cql)}`, {}, 20000);
+  if (!r) return [];
+  try {
+    const xml = new DOMParser().parseFromString(await r.text(), 'application/xml');
+    return Array.from(xml.getElementsByTagNameNS('*', 'record'))
+      .filter(x => x.getElementsByTagNameNS('*', 'datafield').length)
+      .map(marcRecord).filter(Boolean);
+  } catch (e) {
+    return [];
+  }
+}
+
+async function fromK10(isbn) {
+  const list = await k10Query(`pica.isb=${isbn}`, 1);
+  return list[0] || null;
 }
 
 function withTimeout(promise, ms) {
@@ -142,18 +170,17 @@ export function probeImage(url) {
   });
 }
 
-// serverLookup — запрос через ваш Google-скрипт: он достаёт данные и обложку
-// Немецкой национальной библиотеки (DNB), которые браузер напрямую получить не может.
+// serverLookup — запасной поиск через ваш Google-скрипт (DNB, Google Books).
 export async function lookupIsbn(isbn, serverLookup) {
-  const srvPromise = serverLookup ? withTimeout(serverLookup(isbn), 20000) : Promise.resolve(null);
-  const [g, o, srv] = await Promise.all([fromGoogle(isbn), fromOpenLibrary(isbn), srvPromise]);
-  const sources = [srv, g, o].filter(Boolean);
+  const [k, g, o] = await Promise.all([fromK10(isbn), fromGoogle(isbn), fromOpenLibrary(isbn)]);
+  let srv = null;
+  if (!k && !g && !o && serverLookup) srv = await withTimeout(serverLookup(isbn), 20000);
+  const sources = [k, g, o, srv].filter(Boolean);
   const pickField = (f) => {
     for (const s of sources) if (s[f]) return s[f];
     return f === 'pages' ? null : '';
   };
   const coverUrls = [
-    srv && srv.coverDataUrl,
     o && o.cover,
     `https://covers.openlibrary.org/b/isbn/${isbn}-L.jpg?default=false`,
     g && g.cover,
@@ -171,12 +198,14 @@ export async function lookupIsbn(isbn, serverLookup) {
   };
 }
 
-// Поиск по названию. serverSearch — через ваш Google-скрипт (каталог немецких библиотек lobid).
-export async function searchByTitle(query, serverSearch) {
-  const q = encodeURIComponent(query.trim());
-  const [g, srv] = await Promise.all([
+// Поиск по названию: Google Books + каталог немецких библиотек K10plus + Open Library.
+export async function searchByTitle(query) {
+  const text = query.trim();
+  const q = encodeURIComponent(text);
+  const words = text.replace(/["()]/g, ' ').split(/\s+/).filter(Boolean).join(' ');
+  const [g, k] = await Promise.all([
     getJson(`https://www.googleapis.com/books/v1/volumes?q=${q}&maxResults=15&printType=books`),
-    serverSearch ? withTimeout(serverSearch(query.trim()), 20000) : Promise.resolve(null),
+    k10Query(`pica.all="${words}"`, 25),
   ]);
   const out = [];
   const seen = new Set();
@@ -201,7 +230,7 @@ export async function searchByTitle(query, serverSearch) {
       year: (v.publishedDate || '').slice(0, 4),
     });
   }
-  for (const it of srv || []) add({ ...it, isbn: normalizeIsbn(it.isbn) || '', cover: null });
+  for (const it of k) if (it.isbn) add(it);
   if (out.length < 3) {
     const o = await getJson(`https://openlibrary.org/search.json?q=${q}&limit=12&fields=title,author_name,number_of_pages_median,isbn,cover_i,first_publish_year`);
     for (const d of (o && o.docs) || []) {
