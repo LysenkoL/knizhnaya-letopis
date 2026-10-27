@@ -22,7 +22,7 @@ const FACES = [
 ];
 const BEAD_COLORS = ['#E35D6A', '#F2B33D', '#3E9C7B', '#4C6FD6', '#9A5BD3', '#E9853C', '#2BA3B5'];
 const COVER_COLORS = ['#3E7C6B', '#2D3E7A', '#B04A5A', '#8A6A2E', '#5B4A9E', '#2F6F8F', '#A0522D'];
-const APP_VERSION = '2026-10-27.7';
+const APP_VERSION = '2026-10-27.8';
 const SCRIPT_VERSION_NEEDED = 5;
 const BEAD_SECONDS = 300; // 5 минут = 1 бусинка
 const REC_MAX_SECONDS = 180;
@@ -1163,7 +1163,7 @@ routes.settings = async () => {
     <section class="card stack">
       <h2 class="h2">Google Drive</h2>
       <div id="stBox">${statusBox()}</div>
-      ${sync.isConfigured() && (cfg.scriptVersion || 1) < SCRIPT_VERSION_NEEDED ? `<div class="status warn">Нужно обновить Google-скрипт до новой версии (вставить новый код и сделать «Новую версию» развёртывания). Обновите код скрипта, как в инструкции на GitHub, и нажмите «Сохранить и проверить».</div>` : ''}
+      <div id="verBox"></div>
       <label class="field">Адрес скрипта (заканчивается на /exec)
         <input class="input" id="cUrl" value="${esc(cfg.url || '')}" placeholder="https://script.google.com/macros/s/…/exec" autocomplete="off" inputmode="url"></label>
       <label class="field" for="cToken">Ключ доступа</label>
@@ -1255,6 +1255,24 @@ routes.settings = async () => {
       unbusy(btn);
     }
   };
+  // Сами спрашиваем у скрипта его версию — без нажатия кнопок
+  const showVer = (v) => {
+    const box = $('#verBox');
+    if (!box) return;
+    box.innerHTML = v && v < SCRIPT_VERSION_NEEDED
+      ? `<div class="status warn stack" style="gap:6px"><span>Google-скрипт старой версии: ${v}, нужна ${SCRIPT_VERSION_NEEDED}. Книги сохраняются и так, но в таблице не будет колонок «Издательство» и «Год».</span>
+         <span style="font-weight:600">Как обновить: в редакторе скрипта вставьте новый код (Ctrl+A → вставить → Ctrl+S), затем «Начать развёртывание» → «Управление развёртываниями» → ✏️ → Версия: «Новая версия» → «Развернуть». Эта надпись исчезнет сама.</span></div>`
+      : '';
+  };
+  if (sync.isConfigured()) {
+    showVer(cfg.scriptVersion || 1);
+    sync.call({ action: 'ping' }).then((j) => {
+      const c = sync.getCfg();
+      c.scriptVersion = j.version || 1;
+      sync.setCfg(c);
+      showVer(c.scriptVersion);
+    }).catch(() => {});
+  }
   $('#cEye').onclick = () => {
     const inp = $('#cToken');
     const show = inp.classList.toggle('secret') === false;
