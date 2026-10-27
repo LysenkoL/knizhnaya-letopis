@@ -22,7 +22,8 @@ const FACES = [
 ];
 const BEAD_COLORS = ['#E35D6A', '#F2B33D', '#3E9C7B', '#4C6FD6', '#9A5BD3', '#E9853C', '#2BA3B5'];
 const COVER_COLORS = ['#3E7C6B', '#2D3E7A', '#B04A5A', '#8A6A2E', '#5B4A9E', '#2F6F8F', '#A0522D'];
-const SCRIPT_VERSION_NEEDED = 4;
+const APP_VERSION = '2026-10-27.6';
+const SCRIPT_VERSION_NEEDED = 5;
 const BEAD_SECONDS = 300; // 5 минут = 1 бусинка
 const REC_MAX_SECONDS = 180;
 
@@ -287,7 +288,7 @@ let draft = null;
 function newDraft() {
   return {
     stage: 'find', editId: null, fromCatalog: false,
-    title: '', author: '', pages: '', isbn: '',
+    title: '', author: '', pages: '', isbn: '', publisher: '', year: '', notFound: '',
     who: getPref('lastWho', 'alexandra'), date: todayStr(), source: getPref('lastSource', 'library'),
     rating: 0, note: '',
     candidates: [], cover: null, audio: null, audioRemoved: false, dupInfo: '',
@@ -303,6 +304,7 @@ routes.add = async (r) => {
       draft = {
         ...newDraft(), stage: 'form', editId,
         title: b.title || '', author: b.author || '', pages: b.pages || '', isbn: b.isbn || '',
+        publisher: b.publisher || '', year: b.year || '',
         who: b.who, date: b.date, source: b.source || 'library', rating: b.rating || 0, note: b.note || '',
         cover: b.coverFile ? { type: 'file', fileId: b.coverFile } : (b.coverUrl ? { type: 'url', url: b.coverUrl } : null),
         audio: b.audioFile ? { type: 'file', fileId: b.audioFile, sec: b.audioSec || 0 } : null,
@@ -366,6 +368,7 @@ function renderFind() {
 async function chooseResult(x) {
   Object.assign(draft, {
     stage: 'form', fromCatalog: true, title: x.title, author: x.author, pages: x.pages || '', isbn: x.isbn || '',
+    publisher: x.publisher || '', year: x.year || '', notFound: '',
     candidates: x.cover ? [x.cover] : [],
   });
   draft.cover = x.cover ? { type: 'url', url: x.cover } : null;
@@ -377,9 +380,8 @@ async function chooseResult(x) {
     if (more && draft.stage === 'form' && draft.isbn === x.isbn) {
       draft.candidates = [...new Set([...more.covers, ...draft.candidates])];
       if (!draft.cover && draft.candidates[0]) draft.cover = { type: 'url', url: draft.candidates[0] };
-      if (!draft.pages && more.pages) draft.pages = more.pages;
+      fillEmpty(more);
       renderCoverBlock();
-      const p = $('#fPages'); if (p && !p.value && draft.pages) p.value = draft.pages;
     }
   }
 }
@@ -399,15 +401,56 @@ async function findByIsbn(isbn) {
     <p class="small">${sync.isConfigured() ? 'Смотрю в каталогах немецких библиотек, Google Books и Open Library.' : 'Смотрю в каталогах немецких библиотек, Google Books и Open Library.'}</p></div>`;
   const res = await lookupIsbn(isbn, sync.serverLookup);
   Object.assign(draft, {
-    stage: 'form', isbn, fromCatalog: res.found,
+    stage: 'form', isbn, fromCatalog: res.found, notFound: res.found ? '' : isbn,
     title: res.title || '', author: res.author || '', pages: res.pages || '',
+    publisher: res.publisher || '', year: res.year || '',
     candidates: res.covers,
   });
   draft.cover = res.covers[0] ? { type: 'url', url: res.covers[0] } : null;
   await checkDuplicate();
   renderForm();
-  if (!res.found) toast('В каталогах не нашлась. Заполните название и сфотографируйте обложку.', 4200);
-  else if (!res.covers.length) toast('Книгу нашла, а обложку — нет. Сфотографируйте её.', 4200);
+  if (res.found && !res.covers.length) toast('Книгу нашла, а обложки в каталогах нет. Сфотографируйте её.', 4200);
+}
+
+// Заполнить пустые поля формы найденными данными
+function fillEmpty(res) {
+  const map = { title: '#fTitle', author: '#fAuthor', pages: '#fPages', publisher: '#fPublisher', year: '#fYear' };
+  for (const [k, sel] of Object.entries(map)) {
+    if (!draft[k] && res[k]) {
+      draft[k] = res[k];
+      const el = $(sel);
+      if (el) el.value = res[k];
+    }
+  }
+  updateSaveState();
+}
+
+// Повторный поиск по исправленному ISBN прямо из формы
+async function refindFromForm() {
+  const isbn = normalizeIsbn($('#fIsbn').value);
+  const box = $('#isbnMsg');
+  if (!isbn) { box.innerHTML = '<span class="hint">В номере ошибка: ISBN — 13 цифр, начинается на 978 или 979. Сверьте с книгой.</span>'; return; }
+  draft.isbn = isbn;
+  $('#fIsbn').value = isbn;
+  box.innerHTML = '<span class="row small muted"><span class="spinner"></span>Ищу по номеру…</span>';
+  const res = await lookupIsbn(isbn, sync.serverLookup).catch(() => null);
+  if (!draft || draft.isbn !== isbn) return;
+  if (!res || !res.found) {
+    draft.notFound = isbn;
+    box.innerHTML = `<span class="hint">По номеру ${esc(isbn)} ничего не нашлось.</span>`;
+    return;
+  }
+  draft.notFound = '';
+  draft.fromCatalog = true;
+  fillEmpty(res);
+  if (res.covers.length) {
+    draft.candidates = [...new Set([...res.covers, ...(draft.candidates || [])])];
+    if (!draft.cover) draft.cover = { type: 'url', url: draft.candidates[0] };
+    renderCoverBlock();
+  }
+  box.innerHTML = '<span class="found-label">Найдено, поля заполнены</span>';
+  const nf = $('#notFoundBox'); if (nf) nf.remove();
+  await checkDuplicate();
 }
 
 // ----- сканер -----
@@ -453,14 +496,25 @@ function renderForm() {
       <h1 class="title-hand" style="flex:1">${editing ? 'Изменить книгу' : 'Новая книга'}</h1>
     </div>
     ${draft.dupInfo ? `<div class="status warn">${esc(draft.dupInfo)}</div>` : ''}
+    ${draft.notFound ? `<div class="status warn stack" id="notFoundBox" style="gap:8px">
+      <span>По номеру <b>${esc(draft.notFound)}</b> книга не нашлась ни в одном каталоге.</span>
+      <span style="font-weight:600">Сверьте цифры с обратной стороной книги: если ошиблась хоть одна, найдётся чужая книга или ничего. Исправьте номер в поле ISBN ниже и нажмите «Найти». Или найдите книгу по названию.</span>
+      <button class="btn ghost" id="toTitleSearch">${ic('search')}Найти по названию</button></div>` : ''}
     <div class="card" id="coverBlock"></div>
     <div class="card stack">
       <label class="field">Название *<input class="input" id="fTitle" value="${esc(draft.title)}" autocomplete="off"></label>
       <label class="field">Автор<input class="input" id="fAuthor" value="${esc(draft.author)}" autocomplete="off"></label>
       <div class="grid2">
-        <label class="field">Страниц<input class="input" id="fPages" inputmode="numeric" value="${esc(draft.pages)}"></label>
-        <label class="field">ISBN<input class="input" id="fIsbn" inputmode="numeric" value="${esc(draft.isbn)}"></label>
+        <label class="field">Издательство<input class="input" id="fPublisher" value="${esc(draft.publisher)}" autocomplete="off"></label>
+        <label class="field">Год издания<input class="input" id="fYear" inputmode="numeric" value="${esc(draft.year)}"></label>
       </div>
+      <label class="field">Страниц<input class="input" id="fPages" inputmode="numeric" value="${esc(draft.pages)}" style="max-width:50%"></label>
+      <label class="field" for="fIsbn">ISBN (с обратной стороны книги)</label>
+      <div class="input-row">
+        <input class="input" id="fIsbn" inputmode="numeric" value="${esc(draft.isbn)}" autocomplete="off">
+        <button class="btn" type="button" id="fIsbnFind">${ic('search')}Найти</button>
+      </div>
+      <div id="isbnMsg"></div>
     </div>
     <div class="card stack">
       <span class="field">Кто читал</span>
@@ -497,18 +551,15 @@ function renderForm() {
   };
   const bind = (id, key) => { $(id).oninput = (e) => { draft[key] = e.target.value; updateSaveState(); }; };
   bind('#fTitle', 'title'); bind('#fAuthor', 'author'); bind('#fPages', 'pages'); bind('#fNote', 'note'); bind('#fDate', 'date');
+  bind('#fPublisher', 'publisher'); bind('#fYear', 'year');
+  $('#fIsbnFind').onclick = refindFromForm;
+  const tts = $('#toTitleSearch');
+  if (tts) tts.onclick = () => { draft.stage = 'find'; draft.notFound = ''; renderFind(); const t = $('#titleIn'); if (t) { t.focus(); t.scrollIntoView({ block: 'center' }); } };
   $('#fIsbn').oninput = (e) => { draft.isbn = e.target.value; };
-  $('#fIsbn').onchange = async (e) => {
-    const isbn = normalizeIsbn(e.target.value);
-    if (isbn && !draft.candidates.length) {
-      draft.isbn = isbn;
-      const res = await lookupIsbn(isbn, sync.serverLookup).catch(() => null);
-      if (res && res.covers.length) {
-        draft.candidates = res.covers;
-        if (!draft.cover) draft.cover = { type: 'url', url: res.covers[0] };
-        renderCoverBlock();
-      }
-    }
+  $('#fIsbn').onkeydown = (e) => { if (e.key === 'Enter') { e.preventDefault(); refindFromForm(); } };
+  $('#fIsbn').onchange = (e) => {
+    // если название ещё пустое — ищем сразу, как только номер исправлен
+    if (normalizeIsbn(e.target.value) && !draft.title.trim()) refindFromForm();
   };
   $$('[data-who]').forEach(b => b.onclick = () => { draft.who = b.dataset.who; $$('[data-who]').forEach(x => x.setAttribute('aria-pressed', x === b)); });
   $$('[data-src]').forEach(b => b.onclick = () => { draft.source = b.dataset.src; $$('[data-src]').forEach(x => x.setAttribute('aria-pressed', x === b)); });
@@ -686,6 +737,8 @@ async function saveDraft() {
       title: draft.title.trim(),
       author: draft.author.trim(),
       pages: Number(String(draft.pages).replace(/\D/g, '')) || null,
+      publisher: (draft.publisher || '').trim(),
+      year: String(draft.year || '').replace(/\D/g, '').slice(0, 4),
       isbn: normalizeIsbn(draft.isbn) || String(draft.isbn || '').trim(),
       who: draft.who, date: draft.date || todayStr(), source: draft.source,
       rating: draft.rating || 0, note: draft.note.trim(),
@@ -779,6 +832,7 @@ routes.book = async (r) => {
       ${coverHtml(b)}
       <h1>${esc(b.title)}</h1>
       <span class="by">${esc([b.author, b.pages ? b.pages + ' страниц' : ''].filter(Boolean).join(' · '))}</span>
+      ${b.publisher || b.year ? `<span class="by small">${esc([b.publisher, b.year].filter(Boolean).join(', '))}</span>` : ''}
     </div>
     <div class="chips">
       <span class="pill who-${esc(b.who)}">${b.who === 'together' ? 'Читали вместе' : (b.who === 'mama' ? 'Прочитала мама' : 'Прочитала Александра')}</span>
@@ -1149,6 +1203,7 @@ routes.settings = async () => {
       <h2 class="h2">В этом телефоне</h2>
       <p class="small">${nBooks(books.filter(b => !b.deleted).length)} · ${sessions.length} ${plural(sessions.length, 'сеанс', 'сеанса', 'сеансов')} чтения · ${files.length} ${plural(files.length, 'файл', 'файла', 'файлов')}</p>
       <p class="small muted">${persisted ? 'Браузер обещал не удалять данные.' : 'Браузер может удалить данные при нехватке места — поэтому важно подключить Google Drive.'}</p>
+      <p class="small muted">Версия приложения ${APP_VERSION}</p>
     </section>
   `;
   const busy = (btn, text) => { btn.dataset.html = btn.innerHTML; btn.disabled = true; btn.innerHTML = `<span class="spinner"></span>${text}`; };
@@ -1296,7 +1351,15 @@ window.addEventListener('online', () => sync.syncNow());
   await route();
   sync.syncNow();
   if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost')) {
-    navigator.serviceWorker.register('sw.js').catch(() => {});
+    // Когда на GitHub выходит новая версия — один раз перезагружаемся, чтобы она включилась.
+    const hadController = !!navigator.serviceWorker.controller;
+    let reloaded = false;
+    navigator.serviceWorker.addEventListener('controllerchange', () => {
+      if (!hadController || reloaded || draft || (getTimer() || {}).running) return;
+      reloaded = true;
+      location.reload();
+    });
+    navigator.serviceWorker.register('sw.js').then(r => r.update()).catch(() => {});
   }
 })();
 

@@ -88,6 +88,8 @@ async function fromGoogle(isbn) {
     title: v.title || '',
     author: (v.authors || []).join(', '),
     pages: v.pageCount || null,
+    publisher: v.publisher || '',
+    year: (v.publishedDate || '').slice(0, 4),
     cover: gbCover(v.imageLinks),
   };
 }
@@ -100,6 +102,8 @@ async function fromOpenLibrary(isbn) {
     title: b.title || '',
     author: (b.authors || []).map(a => a.name).join(', '),
     pages: b.number_of_pages || null,
+    publisher: ((b.publishers || [])[0] || {}).name || '',
+    year: (String(b.publish_date || '').match(/\d{4}/) || [''])[0],
     cover: b.cover ? https(b.cover.large || b.cover.medium) : null,
   };
 }
@@ -129,7 +133,8 @@ function marcRecord(rec) {
   const extent = fields('300').map(d => marcSub(d, 'a')).join(' ');
   const yearField = fields('264')[0] || fields('260')[0];
   const year = yearField ? (marcSub(yearField, 'c').match(/\d{4}/) || [''])[0] : '';
-  return { title, author: authors.filter(Boolean).join(', '), pages: firstNumber(extent), isbn, year, cover: null };
+  const publisher = yearField ? marcSub(yearField, 'b').replace(/[\[\]]/g, '').replace(/\s*[,:;]\s*$/, '').trim() : '';
+  return { title, author: authors.filter(Boolean).join(', '), pages: firstNumber(extent), publisher, isbn, year, cover: null };
 }
 
 async function k10Query(cql, max) {
@@ -194,6 +199,8 @@ export async function lookupIsbn(isbn, serverLookup) {
     title: pickField('title'),
     author: pickField('author'),
     pages: pickField('pages'),
+    publisher: pickField('publisher'),
+    year: pickField('year'),
     covers: checked.filter(Boolean),
   };
 }
@@ -244,7 +251,17 @@ export async function searchByTitle(query) {
       });
     }
   }
-  return out.slice(0, 20);
+  // самые похожие на запрос — наверх
+  const norm = (x) => String(x || '').toLowerCase().replace(/ß/g, 'ss');
+  const qw = norm(text).split(/[^\p{L}\p{N}]+/u).filter(w => w.length > 1);
+  const score = (it) => {
+    const t = norm(it.title), a = norm(it.author);
+    return qw.reduce((s, w) => s + (t.includes(w) ? 2 : 0) + (a.includes(w) ? 1 : 0), 0) + (it.cover ? 0.5 : 0);
+  };
+  return out.map((it, i) => ({ it, i, s: score(it) }))
+    .sort((x, y) => y.s - x.s || x.i - y.i)
+    .map(x => x.it)
+    .slice(0, 20);
 }
 
 // Пытаемся скачать обложку себе в телефон (получится, если сайт это разрешает).

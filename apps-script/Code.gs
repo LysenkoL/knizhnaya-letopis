@@ -18,7 +18,7 @@
  * Данные никуда больше не отправляются: скрипт работает от вашего имени в вашем аккаунте.
  */
 
-var SCRIPT_VERSION = 4; // меняется, когда обновляется код скрипта
+var SCRIPT_VERSION = 5; // меняется, когда обновляется код скрипта
 var APP_FOLDER = 'Книжная летопись';
 var COVERS_FOLDER = 'Обложки';
 var VOICE_FOLDER = 'Голос';
@@ -28,6 +28,8 @@ var SHARE_COVERS = true;
 
 var BOOK_HEADERS = ['id', 'Дата', 'Кто читал', 'Название', 'Автор', 'Страниц', 'ISBN', 'Оценка', 'Заметка', 'Откуда',
   'Обложка', 'Файл обложки', 'Голос', 'Минут с таймером', 'Добавлено', 'Изменено', 'Удалено', 'data'];
+var DATA_COL = 18; // колонка с полными данными книги (скрыта)
+var EXTRA_HEADERS = ['Издательство', 'Год'];
 var SESSION_HEADERS = ['id', 'Дата', 'Начало', 'Кто читал', 'Минут', 'Бусинок', 'Книга', 'id книги', 'Секунд'];
 
 var WHO = { mama: 'Мама', alexandra: 'Александра', together: 'Вместе' };
@@ -163,7 +165,7 @@ function upsertBook_(p) {
   var row = findRow_(sheet, b.id);
   var prev = {};
   if (row > 0) {
-    try { prev = JSON.parse(sheet.getRange(row, BOOK_HEADERS.length).getValue() || '{}'); } catch (e) { prev = {}; }
+    try { prev = JSON.parse(sheet.getRange(row, DATA_COL).getValue() || '{}'); } catch (e) { prev = {}; }
   }
   var prevDrive = prev.drive || {};
   var coverId = prevDrive.coverId || '';
@@ -222,6 +224,10 @@ function upsertBook_(p) {
     JSON.stringify(b),
   ];
   sheet.getRange(row, 1, 1, values.length).setValues([values]);
+  if (sheet.getRange(1, DATA_COL + 1).getValue() !== EXTRA_HEADERS[0]) {
+    sheet.getRange(1, DATA_COL + 1, 1, EXTRA_HEADERS.length).setValues([EXTRA_HEADERS]).setFontWeight('bold').setBackground('#1F2A5A').setFontColor('#FFFFFF');
+  }
+  sheet.getRange(row, DATA_COL + 1, 1, 2).setValues([[b.publisher || '', b.year || '']]);
   if (coverFormula) sheet.getRange(row, 11).setFormula(coverFormula);
   sheet.getRange(row, 14).setFormula('=IFERROR(ROUND(SUMIF(\'Чтение\'!H:H,A' + row + ',\'Чтение\'!I:I)/60),0)');
   sheet.setRowHeight(row, 120);
@@ -292,7 +298,7 @@ function list_() {
   var books = [];
   var bs = ss.getSheetByName('Книги');
   if (bs.getLastRow() > 1) {
-    var vals = bs.getRange(2, BOOK_HEADERS.length, bs.getLastRow() - 1, 1).getValues();
+    var vals = bs.getRange(2, DATA_COL, bs.getLastRow() - 1, 1).getValues();
     for (var i = 0; i < vals.length; i++) {
       try { if (vals[i][0]) books.push(JSON.parse(vals[i][0])); } catch (e) { /* пропускаем */ }
     }
