@@ -22,7 +22,7 @@ const FACES = [
 ];
 const BEAD_COLORS = ['#E35D6A', '#F2B33D', '#3E9C7B', '#4C6FD6', '#9A5BD3', '#E9853C', '#2BA3B5'];
 const COVER_COLORS = ['#3E7C6B', '#2D3E7A', '#B04A5A', '#8A6A2E', '#5B4A9E', '#2F6F8F', '#A0522D'];
-const APP_VERSION = '2026-10-27.6';
+const APP_VERSION = '2026-10-27.7';
 const SCRIPT_VERSION_NEEDED = 5;
 const BEAD_SECONDS = 300; // 5 минут = 1 бусинка
 const REC_MAX_SECONDS = 180;
@@ -396,20 +396,21 @@ async function checkDuplicate() {
   }
 }
 
-async function findByIsbn(isbn) {
+async function findByIsbn(isbn, scanned = false) {
   view.innerHTML = `<div class="card empty"><span class="spinner"></span><p>Ищу книгу ${esc(isbn)}…</p>
     <p class="small">${sync.isConfigured() ? 'Смотрю в каталогах немецких библиотек, Google Books и Open Library.' : 'Смотрю в каталогах немецких библиотек, Google Books и Open Library.'}</p></div>`;
   const res = await lookupIsbn(isbn, sync.serverLookup);
   Object.assign(draft, {
-    stage: 'form', isbn, fromCatalog: res.found, notFound: res.found ? '' : isbn,
+    stage: 'form', isbn, fromCatalog: res.found, notFound: res.found ? '' : isbn, notFoundScanned: scanned,
     title: res.title || '', author: res.author || '', pages: res.pages || '',
     publisher: res.publisher || '', year: res.year || '',
     candidates: res.covers,
   });
-  draft.cover = res.covers[0] ? { type: 'url', url: res.covers[0] } : null;
+  // своё фото обложки, если уже сделано, не трогаем
+  if (!(draft.cover && draft.cover.type === 'blob')) draft.cover = res.covers[0] ? { type: 'url', url: res.covers[0] } : null;
   await checkDuplicate();
   renderForm();
-  if (res.found && !res.covers.length) toast('Книгу нашла, а обложки в каталогах нет. Сфотографируйте её.', 4200);
+  if (res.found && !res.covers.length && !draft.cover) toast('Книгу нашла, а обложки в каталогах нет. Сфотографируйте её.', 4200);
 }
 
 // Заполнить пустые поля формы найденными данными
@@ -476,10 +477,13 @@ async function openScanner() {
     stop = await startScanner($('video', wrap), (isbn) => {
       if (navigator.vibrate) navigator.vibrate(80);
       close();
-      findByIsbn(isbn);
-    }, () => {
+      findByIsbn(isbn, true);
+    }, (state) => {
       const m = $('#scanMsg', wrap);
-      if (m) m.textContent = 'Это не ISBN (может, наклейка библиотеки). Найдите штрихкод, который начинается на 978 или 979.';
+      if (!m) return;
+      m.textContent = state === 'reading'
+        ? 'Вижу штрихкод, проверяю… Держите телефон ровно.'
+        : 'Это не ISBN (может, наклейка библиотеки). Найдите штрихкод, который начинается на 978 или 979.';
     });
   } catch (e) {
     close();
@@ -498,7 +502,8 @@ function renderForm() {
     ${draft.dupInfo ? `<div class="status warn">${esc(draft.dupInfo)}</div>` : ''}
     ${draft.notFound ? `<div class="status warn stack" id="notFoundBox" style="gap:8px">
       <span>По номеру <b>${esc(draft.notFound)}</b> книга не нашлась ни в одном каталоге.</span>
-      <span style="font-weight:600">Сверьте цифры с обратной стороной книги: если ошиблась хоть одна, найдётся чужая книга или ничего. Исправьте номер в поле ISBN ниже и нажмите «Найти». Или найдите книгу по названию.</span>
+      <span style="font-weight:600">${draft.notFoundScanned ? 'Возможно, сканер прочитал штрихкод с ошибкой (бывает, если он помят или частично закрыт наклейкой). Сверьте цифры под штрихкодом или отсканируйте ещё раз.' : 'Сверьте цифры с обратной стороной книги: если ошиблась хоть одна, найдётся чужая книга или ничего.'} Исправить номер можно в поле ISBN ниже — потом «Найти».</span>
+      ${draft.notFoundScanned ? `<button class="btn accent" id="rescanBtn">${ic('barcode')}Сканировать ещё раз</button>` : ''}
       <button class="btn ghost" id="toTitleSearch">${ic('search')}Найти по названию</button></div>` : ''}
     <div class="card" id="coverBlock"></div>
     <div class="card stack">
@@ -553,6 +558,8 @@ function renderForm() {
   bind('#fTitle', 'title'); bind('#fAuthor', 'author'); bind('#fPages', 'pages'); bind('#fNote', 'note'); bind('#fDate', 'date');
   bind('#fPublisher', 'publisher'); bind('#fYear', 'year');
   $('#fIsbnFind').onclick = refindFromForm;
+  const rs = $('#rescanBtn');
+  if (rs) rs.onclick = () => { draft.notFound = ''; openScanner(); };
   const tts = $('#toTitleSearch');
   if (tts) tts.onclick = () => { draft.stage = 'find'; draft.notFound = ''; renderFind(); const t = $('#titleIn'); if (t) { t.focus(); t.scrollIntoView({ block: 'center' }); } };
   $('#fIsbn').oninput = (e) => { draft.isbn = e.target.value; };

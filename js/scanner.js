@@ -1,15 +1,21 @@
 // Сканер штрихкода ISBN через камеру.
 // На Android (Chrome) используется встроенный BarcodeDetector,
 // на iPhone и в остальных браузерах — библиотека ZXing (лежит в папке vendor).
+//
+// Защита от ошибок: номер принимается, только когда один и тот же ISBN
+// прочитан несколько раз подряд. Одиночное «чтение» с ошибкой отбрасывается.
 
 import { normalizeIsbn } from './lookup.js';
+
+const CONFIRM_READS = 3;   // столько одинаковых чтений нужно
+const WINDOW = 8;          // из последних N чтений
 
 const CONSTRAINTS = {
   audio: false,
   video: {
     facingMode: { ideal: 'environment' },
-    width: { ideal: 1280 },
-    height: { ideal: 720 },
+    width: { ideal: 1920 },
+    height: { ideal: 1080 },
   },
 };
 
@@ -29,28 +35,38 @@ async function nativeDetector() {
   try {
     const supported = await window.BarcodeDetector.getSupportedFormats();
     if (!supported.includes('ean_13')) return null;
-    const formats = ['ean_13', 'ean_8', 'upc_a', 'upc_e'].filter(f => supported.includes(f));
-    return new window.BarcodeDetector({ formats });
+    return new window.BarcodeDetector({ formats: ['ean_13'] });
   } catch (e) {
     return null;
   }
 }
 
-// onIsbn(isbn13) вызывается один раз, когда найден корректный ISBN.
+// onIsbn(isbn13) — когда номер надёжно подтверждён.
+// onProgress(state) — 'reading' (номер виден, проверяю) или 'other' (это не ISBN).
 // Возвращает функцию stop().
-export async function startScanner(video, onIsbn, onOtherCode) {
+export async function startScanner(video, onIsbn, onProgress = () => {}) {
   let stopped = false;
   let stopFn = () => {};
+  const recent = [];
+
   const handle = (text) => {
     if (stopped) return false;
-    const isbn = normalizeIsbn(text);
-    if (isbn) {
+    const raw = String(text || '').replace(/\D/g, '');
+    const isbn = raw.length === 13 ? normalizeIsbn(raw) : null;
+    if (!isbn) {
+      if (raw.length) onProgress('other');
+      return false;
+    }
+    recent.push(isbn);
+    if (recent.length > WINDOW) recent.shift();
+    const same = recent.filter(x => x === isbn).length;
+    if (same >= CONFIRM_READS) {
       stopped = true;
       stopFn();
       onIsbn(isbn);
       return true;
     }
-    if (onOtherCode) onOtherCode(text);
+    onProgress('reading');
     return false;
   };
 
@@ -74,14 +90,17 @@ export async function startScanner(video, onIsbn, onOtherCode) {
         const codes = await detector.detect(video);
         for (const c of codes) if (handle(c.rawValue)) return;
       } catch (e) { /* кадр не готов */ }
-      timer = setTimeout(loop, 180);
+      timer = setTimeout(loop, 120);
     };
     loop();
     return () => stopFn();
   }
 
   await loadScript('vendor/zxing-browser.min.js');
-  const reader = new window.ZXingBrowser.BrowserMultiFormatReader();
+  const Z = window.ZXingBrowser;
+  // 2 = POSSIBLE_FORMATS, 3 = TRY_HARDER (константы ZXing)
+  const hints = new Map([[2, [Z.BarcodeFormat.EAN_13]], [3, true]]);
+  const reader = new Z.BrowserMultiFormatOneDReader(hints);
   video.setAttribute('playsinline', '');
   video.muted = true;
   const controls = await reader.decodeFromConstraints(CONSTRAINTS, video, (result) => {
