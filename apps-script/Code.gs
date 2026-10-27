@@ -18,6 +18,7 @@
  * Данные никуда больше не отправляются: скрипт работает от вашего имени в вашем аккаунте.
  */
 
+var SCRIPT_VERSION = 3; // меняется, когда обновляется код скрипта
 var APP_FOLDER = 'Книжная летопись';
 var COVERS_FOLDER = 'Обложки';
 var VOICE_FOLDER = 'Голос';
@@ -117,12 +118,13 @@ function doPost(e) {
 
     lock.waitLock(25000);
     switch (p.action) {
-      case 'ping': return json_({ ok: true, sheetName: ss_().getName() });
+      case 'ping': return json_({ ok: true, sheetName: ss_().getName(), version: SCRIPT_VERSION });
       case 'upsertBook': return json_(upsertBook_(p));
       case 'upsertSession': return json_(upsertSession_(p.session));
       case 'list': return json_(list_());
       case 'file': return json_(file_(p.id));
       case 'lookup': return json_({ ok: true, book: lookup_(p.isbn) });
+      case 'search': return json_({ ok: true, items: search_(p.q) });
       default: return json_({ ok: false, error: 'Неизвестное действие: ' + p.action });
     }
   } catch (err) {
@@ -241,8 +243,8 @@ function dataUrlToBlob_(dataUrl, name) {
 
 function fetchImage_(url, name) {
   try {
-    var r = UrlFetchApp.fetch(url, { muteHttpExceptions: true, followRedirects: true });
-    if (r.getResponseCode() !== 200) return null;
+    var r = get_(url);
+    if (!r || r.getResponseCode() !== 200) return null;
     var blob = r.getBlob();
     var type = blob.getContentType() || '';
     if (type.indexOf('image/') !== 0 || blob.getBytes().length < 1000) return null;
@@ -328,46 +330,127 @@ function file_(id) {
   return { ok: true, mime: blob.getContentType(), base64: Utilities.base64Encode(blob.getBytes()) };
 }
 
-// ---------------------------------------------------------------- поиск книги на стороне Google
-// Запасной вариант, если из телефона каталоги не ответили.
+// ---------------------------------------------------------------- поиск книг
+// Поиск идёт отсюда, а не из телефона: каталоги немецких библиотек
+// не пускают браузеры (защита от ботов), а скрипт пускают.
+
+var UA = 'KnizhnayaLetopis/1.0 (+https://github.com/LysenkoL/knizhnaya-letopis)';
+
+function get_(url) {
+  try {
+    return UrlFetchApp.fetch(url, { muteHttpExceptions: true, followRedirects: true, headers: { 'User-Agent': UA, 'Accept': 'application/json, application/xml, image/*;q=0.9, */*;q=0.5' } });
+  } catch (e) {
+    return null;
+  }
+}
+
+function getJson_(url) {
+  var r = get_(url);
+  if (!r || r.getResponseCode() !== 200) return null;
+  try { return JSON.parse(r.getContentText()); } catch (e) { return null; }
+}
+
+function firstNumber_(s) {
+  var m = String(s || '').match(/(\d{2,4})\s*(S\.|Seiten|p\.|pages)/i) || String(s || '').match(/(\d{2,4})/);
+  return m ? Number(m[1]) : null;
+}
+
+function lobidItem_(x) {
+  var sub = (x.otherTitleInformation || [])[0];
+  var title = (x.title || '') + (sub && !/^(roman|erzählung|ein |eine |mit )/i.test(sub) ? ': ' + sub : '');
+  var contrib = x.contribution || [];
+  var authors = contrib.filter(function (c) { return /autor|verfasser/i.test((c.role && c.role.label) || ''); });
+  if (!authors.length) authors = contrib;
+  var isbn = '';
+  (x.isbn || []).forEach(function (i) { if (!isbn && /^97[89]\d{10}$/.test(i)) isbn = i; });
+  return {
+    title: String(title).trim(),
+    author: authors.map(function (c) { return flipName_(c.agent && c.agent.label); }).filter(String).join(', '),
+    pages: firstNumber_(x.extent),
+    isbn: isbn,
+    year: ((x.publication || [])[0] || {}).startDate || '',
+  };
+}
+
 function lookup_(isbn) {
   isbn = String(isbn || '').replace(/[^0-9X]/gi, '');
   if (!isbn) return null;
-  try {
-    var r = UrlFetchApp.fetch('https://services.dnb.de/sru/dnb?version=1.1&operation=searchRetrieve&query=num%3D' + isbn + '&recordSchema=oai_dc&maximumRecords=1', { muteHttpExceptions: true });
-    if (r.getResponseCode() === 200) {
+  var meta = null;
+
+  // 1. lobid.org — общий каталог немецких библиотек
+  var l = getJson_('https://lobid.org/resources/search?q=isbn:' + isbn + '&format=json&size=1');
+  if (l && l.member && l.member[0]) meta = lobidItem_(l.member[0]);
+
+  // 2. Немецкая национальная библиотека (DNB)
+  if (!meta || !meta.title) {
+    var r = get_('https://services.dnb.de/sru/dnb?version=1.1&operation=searchRetrieve&query=num%3D' + isbn + '&recordSchema=oai_dc&maximumRecords=1');
+    if (r && r.getResponseCode() === 200) {
       var x = r.getContentText();
       var title = (x.match(/<dc:title>([\s\S]*?)<\/dc:title>/) || [])[1] || '';
       var creators = [];
       var re = /<dc:creator>([\s\S]*?)<\/dc:creator>/g, m;
       while ((m = re.exec(x))) creators.push(flipName_(m[1]));
       var format = (x.match(/<dc:format>([\s\S]*?)<\/dc:format>/) || [])[1] || '';
-      var pages = (format.match(/(\d{2,4})\s*S/) || [])[1];
-      if (title) {
-        return { title: decode_(title.split(' / ')[0]), author: decode_(creators.join(', ')), pages: pages ? Number(pages) : null, cover: '' };
-      }
+      if (title) meta = { title: decode_(title.split(' / ')[0]), author: decode_(creators.join(', ')), pages: firstNumber_(format) };
     }
-  } catch (e) { /* дальше */ }
-  try {
-    var g = UrlFetchApp.fetch('https://www.googleapis.com/books/v1/volumes?q=isbn:' + isbn, { muteHttpExceptions: true });
-    if (g.getResponseCode() === 200) {
-      var j = JSON.parse(g.getContentText());
-      var v = j.items && j.items[0] && j.items[0].volumeInfo;
-      if (v) {
-        var img = v.imageLinks ? (v.imageLinks.thumbnail || '').replace('http://', 'https://').replace('&edge=curl', '') : '';
-        return { title: v.title || '', author: (v.authors || []).join(', '), pages: v.pageCount || null, cover: img };
-      }
+  }
+
+  // 3. Google Books
+  var gCover = '';
+  var g = getJson_('https://www.googleapis.com/books/v1/volumes?q=isbn:' + isbn);
+  var v = g && g.items && g.items[0] && g.items[0].volumeInfo;
+  if (v) {
+    if (!meta || !meta.title) meta = { title: v.title || '', author: (v.authors || []).join(', '), pages: v.pageCount || null };
+    if (meta && !meta.pages && v.pageCount) meta.pages = v.pageCount;
+    if (v.imageLinks) gCover = String(v.imageLinks.thumbnail || '').replace('http://', 'https://').replace('&edge=curl', '');
+  }
+
+  meta = meta || { title: '', author: '', pages: null };
+  meta.cover = gCover;
+
+  // 4. Обложка из каталога DNB (немецкие издательства) — отдаём картинкой
+  var c = get_('https://portal.dnb.de/opac/mvb/cover?isbn=' + isbn);
+  if (c && c.getResponseCode() === 200) {
+    var type = String(c.getHeaders()['Content-Type'] || '');
+    var bytes = c.getContent();
+    if (type.indexOf('image/') === 0 && bytes.length > 2000) {
+      meta.coverDataUrl = 'data:image/jpeg;base64,' + Utilities.base64Encode(bytes);
     }
-  } catch (e2) { /* ничего */ }
-  return null;
+  }
+  if (!meta.title && !meta.coverDataUrl && !meta.cover) return null;
+  return meta;
+}
+
+function search_(q) {
+  q = String(q || '').trim();
+  if (q.length < 2) return [];
+  var out = [];
+  var seen = {};
+  var l = getJson_('https://lobid.org/resources/search?q=' + encodeURIComponent(q) + '&format=json&size=25&filter=' + encodeURIComponent('type:Book AND _exists_:isbn'));
+  ((l && l.member) || []).forEach(function (x) {
+    var it = lobidItem_(x);
+    if (!it.title || out.length >= 15) return;
+    var key = it.isbn || (it.title + '|' + it.author);
+    if (seen[key]) return;
+    seen[key] = true;
+    out.push(it);
+  });
+  return out;
 }
 
 function flipName_(s) {
-  var clean = String(s).replace(/\[[^\]]*\]/g, '').replace(/\(.*?\)/g, '').trim();
+  var clean = String(s || '').replace(/\[[^\]]*\]/g, '').replace(/\(.*?\)/g, '').trim();
   var m = clean.match(/^([^,]+),\s*(.+)$/);
   return m ? m[2].trim() + ' ' + m[1].trim() : clean;
 }
 
 function decode_(s) {
   return String(s).replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'").trim();
+}
+
+// Проверка поиска: выберите эту функцию вверху и нажмите «Выполнить», результат — в журнале.
+function testLookup() {
+  var r = lookup_('9783401716787');
+  Logger.log(r ? ('Найдено: ' + r.title + ' — ' + r.author + ', ' + r.pages + ' стр., обложка: ' + (r.coverDataUrl ? 'есть' : 'нет')) : 'Ничего не найдено');
+  Logger.log('Поиск по названию: ' + search_('kleine Hexe Preußler').slice(0, 3).map(function (x) { return x.title; }).join(' | '));
 }

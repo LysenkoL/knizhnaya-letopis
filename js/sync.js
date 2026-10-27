@@ -207,6 +207,16 @@ export async function restoreFromDrive(onProgress = () => {}) {
 
 export async function serverLookup(isbn) {
   if (!isConfigured()) return null;
-  const j = await call({ action: 'lookup', isbn });
-  return j.book || null;
+  try {
+    const j = await call({ action: 'lookup', isbn });
+    return j.book || null;
+  } catch (e) { return null; }
+}
+
+export async function serverSearch(q) {
+  if (!isConfigured()) return null;
+  try {
+    const j = await call({ action: 'search', q });
+    return j.items || null;
+  } catch (e) { return null; }
 }

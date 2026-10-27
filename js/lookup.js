@@ -1,6 +1,6 @@
 // Поиск книги по ISBN (штрихкоду) и по названию.
-// Источники: Google Books, Open Library, Немецкая национальная библиотека (DNB).
-// Обложки: DNB (хорошо для немецких книг), Open Library, Google Books.
+// Источники: ваш Google-скрипт (каталог lobid + Немецкая национальная библиотека DNB),
+// Google Books, Open Library. Обложки: DNB (через скрипт), Open Library, Google Books.
 
 const TIMEOUT = 9000;
 
@@ -104,23 +104,26 @@ async function fromOpenLibrary(isbn) {
   };
 }
 
-async function fromDnb(isbn) {
-  const r = await fetchWithTimeout(`https://services.dnb.de/sru/dnb?version=1.1&operation=searchRetrieve&query=num%3D${isbn}&recordSchema=oai_dc&maximumRecords=1`);
-  if (!r) return null;
-  try {
-    const xml = new DOMParser().parseFromString(await r.text(), 'application/xml');
-    const pick = (tag) => Array.from(xml.getElementsByTagNameNS('*', tag)).map(n => n.textContent.trim());
-    const title = (pick('title')[0] || '').split(' / ')[0].replace(/\s+:\s+/, ': ');
-    if (!title) return null;
-    return {
-      title,
-      author: pick('creator').map(flipName).filter(Boolean).join(', '),
-      pages: firstNumber(pick('format').join(' ')),
-      cover: null,
-    };
-  } catch (e) {
-    return null;
-  }
+// Разбор записи lobid.org (используется, если сервер когда-то начнёт пускать браузеры).
+function lobidItem(x) {
+  const sub = (x.otherTitleInformation || [])[0];
+  const title = (x.title || '') + (sub && !/^(roman|erzählung|ein |eine |mit )/i.test(sub) ? ': ' + sub : '');
+  const contrib = x.contribution || [];
+  let authors = contrib.filter(c => /autor|verfasser/i.test((c.role && c.role.label) || ''));
+  if (!authors.length) authors = contrib;
+  const isbns = (x.isbn || []).map(normalizeIsbn).filter(Boolean);
+  return {
+    title: title.trim(),
+    author: authors.map(c => flipName(c.agent && c.agent.label)).filter(Boolean).join(', '),
+    pages: firstNumber(x.extent),
+    isbn: isbns[0] || '',
+    year: ((x.publication || [])[0] || {}).startDate || '',
+    cover: null,
+  };
+}
+
+function withTimeout(promise, ms) {
+  return Promise.race([promise, new Promise(res => setTimeout(() => res(null), ms))]).catch(() => null);
 }
 
 // Проверяем, что картинка реально загружается и это не заглушка 1×1.
@@ -139,19 +142,18 @@ export function probeImage(url) {
   });
 }
 
+// serverLookup — запрос через ваш Google-скрипт: он достаёт данные и обложку
+// Немецкой национальной библиотеки (DNB), которые браузер напрямую получить не может.
 export async function lookupIsbn(isbn, serverLookup) {
-  const [g, o, d] = await Promise.all([fromGoogle(isbn), fromOpenLibrary(isbn), fromDnb(isbn)]);
-  let srv = null;
-  if (!g && !o && !d && serverLookup) {
-    try { srv = await serverLookup(isbn); } catch (e) { srv = null; }
-  }
-  const sources = [d, g, o, srv].filter(Boolean);
+  const srvPromise = serverLookup ? withTimeout(serverLookup(isbn), 20000) : Promise.resolve(null);
+  const [g, o, srv] = await Promise.all([fromGoogle(isbn), fromOpenLibrary(isbn), srvPromise]);
+  const sources = [srv, g, o].filter(Boolean);
   const pickField = (f) => {
     for (const s of sources) if (s[f]) return s[f];
     return f === 'pages' ? null : '';
   };
   const coverUrls = [
-    `https://portal.dnb.de/opac/mvb/cover?isbn=${isbn}`,
+    srv && srv.coverDataUrl,
     o && o.cover,
     `https://covers.openlibrary.org/b/isbn/${isbn}-L.jpg?default=false`,
     g && g.cover,
@@ -169,16 +171,28 @@ export async function lookupIsbn(isbn, serverLookup) {
   };
 }
 
-export async function searchByTitle(query) {
+// Поиск по названию. serverSearch — через ваш Google-скрипт (каталог немецких библиотек lobid).
+export async function searchByTitle(query, serverSearch) {
   const q = encodeURIComponent(query.trim());
+  const [g, srv] = await Promise.all([
+    getJson(`https://www.googleapis.com/books/v1/volumes?q=${q}&maxResults=15&printType=books`),
+    serverSearch ? withTimeout(serverSearch(query.trim()), 20000) : Promise.resolve(null),
+  ]);
   const out = [];
-  const g = await getJson(`https://www.googleapis.com/books/v1/volumes?q=${q}&maxResults=15&printType=books`);
+  const seen = new Set();
+  const add = (it) => {
+    if (!it.title) return;
+    const key = it.isbn || (it.title + '|' + it.author);
+    if (seen.has(key)) return;
+    seen.add(key);
+    out.push(it);
+  };
   for (const it of (g && g.items) || []) {
     const v = it.volumeInfo || {};
     const ids = v.industryIdentifiers || [];
     const isbn13 = (ids.find(x => x.type === 'ISBN_13') || {}).identifier || '';
     const isbn10 = (ids.find(x => x.type === 'ISBN_10') || {}).identifier || '';
-    out.push({
+    add({
       title: v.title || '',
       author: (v.authors || []).join(', '),
       pages: v.pageCount || null,
@@ -187,21 +201,21 @@ export async function searchByTitle(query) {
       year: (v.publishedDate || '').slice(0, 4),
     });
   }
+  for (const it of srv || []) add({ ...it, isbn: normalizeIsbn(it.isbn) || '', cover: null });
   if (out.length < 3) {
     const o = await getJson(`https://openlibrary.org/search.json?q=${q}&limit=12&fields=title,author_name,number_of_pages_median,isbn,cover_i,first_publish_year`);
     for (const d of (o && o.docs) || []) {
-      const isbn = ((d.isbn || []).map(normalizeIsbn).find(Boolean)) || '';
-      out.push({
+      add({
         title: d.title || '',
         author: (d.author_name || []).join(', '),
         pages: d.number_of_pages_median || null,
-        isbn,
+        isbn: ((d.isbn || []).map(normalizeIsbn).find(Boolean)) || '',
         cover: d.cover_i ? `https://covers.openlibrary.org/b/id/${d.cover_i}-L.jpg` : null,
         year: d.first_publish_year ? String(d.first_publish_year) : '',
       });
     }
   }
-  return out.filter(x => x.title);
+  return out.slice(0, 20);
 }
 
 // Пытаемся скачать обложку себе в телефон (получится, если сайт это разрешает).
