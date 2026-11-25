@@ -20,11 +20,9 @@ const FACES = [
   { v: 3, label: 'Понравилось', mouth: 'M8.5 14c1.8 2 5.2 2 7 0' },
   { v: 4, label: 'Очень понравилось', mouth: 'M7.5 13h9c-.6 3-2.4 4.5-4.5 4.5S8.1 16 7.5 13z' },
 ];
-const BEAD_COLORS = ['#E35D6A', '#F2B33D', '#3E9C7B', '#4C6FD6', '#9A5BD3', '#E9853C', '#2BA3B5'];
 const COVER_COLORS = ['#3E7C6B', '#2D3E7A', '#B04A5A', '#8A6A2E', '#5B4A9E', '#2F6F8F', '#A0522D'];
-const APP_VERSION = '2026-10-27.8';
+const APP_VERSION = '2026-11-25.1';
 const SCRIPT_VERSION_NEEDED = 5;
-const BEAD_SECONDS = 300; // 5 минут = 1 бусинка
 const REC_MAX_SECONDS = 180;
 
 const ICONS = {
@@ -42,7 +40,7 @@ const ICONS = {
   download: '<path d="M12 4v11M7 10l5 5 5-5M5 20h14"/>',
   upload: '<path d="M12 20V9M7 14l5-5 5 5M5 4h14"/>',
   check: '<path d="M5 12l5 5 9-10"/>',
-  timer: '<circle cx="12" cy="13" r="8"/><path d="M12 9v4l2.5 2M10 2h4"/>',
+  plus: '<path d="M12 5v14M5 12h14"/>',
   refresh: '<path d="M20 11a8 8 0 1 0-2.3 5.7M20 4v7h-7"/>',
   eye: '<path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/>',
   eyeOff: '<path d="M3 3l18 18M10.6 5.1A10.4 10.4 0 0 1 12 5c6.5 0 10 7 10 7a17 17 0 0 1-3.2 4.2M6.6 6.6A17 17 0 0 0 2 12s3.5 7 10 7a10 10 0 0 0 5.4-1.6M9.9 9.9a3 3 0 0 0 4.2 4.2"/>',
@@ -92,7 +90,6 @@ function plural(n, one, few, many) {
   return many;
 }
 const nBooks = (n) => `${n} ${plural(n, 'книга', 'книги', 'книг')}`;
-const nBeads = (n) => `${n} ${plural(n, 'бусинка', 'бусинки', 'бусинок')}`;
 const nPages = (n) => `${n.toLocaleString('ru-RU')} ${plural(n, 'страница', 'страницы', 'страниц')}`;
 const nMin = (n) => `${n} мин`;
 
@@ -231,7 +228,7 @@ routes.shelf = async () => {
   const mamaBooks = books.filter(b => forWho(b, 'mama'));
   const alexBooks = books.filter(b => forWho(b, 'alexandra'));
   const mamaPagesYear = mamaBooks.filter(inYear).reduce((s, b) => s + (Number(b.pages) || 0), 0);
-  const alexBeads = sessions.filter(s => s.who === 'alexandra').reduce((s, x) => s + (x.beads || 0), 0);
+  const alexPagesYear = alexBooks.filter(inYear).reduce((s, b) => s + (Number(b.pages) || 0), 0);
 
   const shown = books.filter(b => forWho(b, filter));
   const groups = new Map();
@@ -253,7 +250,7 @@ routes.shelf = async () => {
     <div class="row between">${syncDotHtml()}</div>
     <div class="grid2">
       <div class="card stat"><span class="who">Мама</span><span class="num">${nBooks(mamaBooks.length)}</span><span class="sub">${nPages(mamaPagesYear)} в ${year}</span></div>
-      <div class="card stat"><span class="who" style="color:var(--alex)">Александра</span><span class="num">${nBooks(alexBooks.length)}</span><span class="sub">${nBeads(alexBeads)}</span></div>
+      <div class="card stat"><span class="who" style="color:var(--alex)">Александра</span><span class="num">${nBooks(alexBooks.length)}</span><span class="sub">${nPages(alexPagesYear)} в ${year}</span></div>
     </div>
     <div class="seg" role="group" aria-label="Чьи книги показать">
       ${[['all', 'Все'], ['mama', 'Мама'], ['alexandra', 'Александра']].map(([k, l]) => `<button data-f="${k}" aria-pressed="${filter === k}">${l}</button>`).join('')}
@@ -296,6 +293,13 @@ function newDraft() {
 }
 
 routes.add = async (r) => {
+  if (pendingIsbn) {
+    const isbn = pendingIsbn;
+    pendingIsbn = null;
+    draft = newDraft();
+    findByIsbn(isbn);
+    return;
+  }
   const editId = r.q.get('edit');
   if (editId) {
     if (!draft || draft.editId !== editId) {
@@ -397,6 +401,7 @@ async function checkDuplicate() {
 }
 
 async function findByIsbn(isbn, scanned = false) {
+  if (scanned && navigator.vibrate) navigator.vibrate(80);
   view.innerHTML = `<div class="card empty"><span class="spinner"></span><p>Ищу книгу ${esc(isbn)}…</p>
     <p class="small">${sync.isConfigured() ? 'Смотрю в каталогах немецких библиотек, Google Books и Open Library.' : 'Смотрю в каталогах немецких библиотек, Google Books и Open Library.'}</p></div>`;
   const res = await lookupIsbn(isbn, sync.serverLookup);
@@ -455,7 +460,7 @@ async function refindFromForm() {
 }
 
 // ----- сканер -----
-async function openScanner() {
+async function openScanner(onIsbn = (isbn) => findByIsbn(isbn, true), manualSel = '#isbnIn') {
   const wrap = document.createElement('div');
   wrap.className = 'scanner';
   wrap.innerHTML = `
@@ -472,12 +477,11 @@ async function openScanner() {
   const close = () => { stop(); wrap.remove(); document.body.classList.remove('scanning'); };
   onLeave(close);
   $('#scanClose', wrap).onclick = close;
-  $('#scanManual', wrap).onclick = () => { close(); const i = $('#isbnIn'); if (i) i.focus(); };
+  $('#scanManual', wrap).onclick = () => { close(); const i = $(manualSel); if (i) i.focus(); };
   try {
     stop = await startScanner($('video', wrap), (isbn) => {
-      if (navigator.vibrate) navigator.vibrate(80);
       close();
-      findByIsbn(isbn, true);
+      onIsbn(isbn);
     }, (state) => {
       const m = $('#scanMsg', wrap);
       if (!m) return;
@@ -827,9 +831,6 @@ const HERO_BG = { mama: '#DDE3F3', alexandra: '#FBE3D3', together: '#DCEBE5' };
 routes.book = async (r) => {
   const b = await db.get('books', r.arg);
   if (!b || b.deleted) { location.hash = '#/shelf'; return; }
-  const sessions = (await db.getAll('sessions')).filter(s => s.bookId === b.id);
-  const minutes = Math.round(sessions.reduce((s, x) => s + (x.seconds || 0), 0) / 60);
-  const beads = sessions.reduce((s, x) => s + (x.beads || 0), 0);
   const face = FACES.find(f => f.v === b.rating);
   const who = WHO[b.who] || WHO.mama;
   view.innerHTML = `
@@ -851,12 +852,10 @@ routes.book = async (r) => {
         <div class="stack" style="gap:6px;flex:1"><b class="small">Рассказ о книге · ${mmss(b.audioSec || 0)}</b><div class="bar"><i id="bBar"></i></div></div>
       </div>` : ''}
     ${b.note ? `<div class="card stack" style="gap:4px"><span class="small muted" style="font-weight:800">Заметка</span><div class="note-hand">${esc(b.note)}</div></div>` : ''}
-    <div class="grid3">
-      <div class="mini"><b>${minutes}</b><span>минут с таймером</span></div>
-      <div class="mini"><b>${beads}</b><span>${plural(beads, 'бусинка', 'бусинки', 'бусинок')}</span></div>
+    <div class="grid2">
+      <div class="mini"><b>${b.pages || '—'}</b><span>страниц</span></div>
       <div class="mini">${face ? faceSvg(face, `role="img" aria-label="${face.label}"`) : '<b>—</b>'}<span>${face ? esc(face.label.toLowerCase()) : 'без оценки'}</span></div>
     </div>
-    <a class="btn secondary" href="#/timer?book=${encodeURIComponent(b.id)}">${ic('timer')}Читать с таймером</a>
     <p class="small muted" style="text-align:center">${b.isbn ? 'ISBN ' + esc(b.isbn) + ' · ' : ''}${b.dirty ? 'ещё не отправлено в Google' : (b.drive && b.drive.coverId ? 'сохранено в Google Drive' : '')}</p>
   `;
   hydrateCovers();
@@ -885,231 +884,150 @@ routes.book = async (r) => {
   }
 };
 
-// ===================== ТАЙМЕР =====================
-const TIMER_KEY = 'letopis.timer';
-function getTimer() {
-  try { return JSON.parse(localStorage.getItem(TIMER_KEY)) || null; } catch (e) { return null; }
-}
-function saveTimer(t) {
-  try { if (t) localStorage.setItem(TIMER_KEY, JSON.stringify(t)); else localStorage.removeItem(TIMER_KEY); } catch (e) { /* ignore */ }
-}
-function newTimer() {
-  return { running: false, startedAt: null, accumulated: 0, who: getPref('timerWho', 'alexandra'), bookId: '', sessionId: null, sessionStart: null, beadsShown: 0 };
-}
-function elapsed(t) {
-  if (!t) return 0;
-  return t.accumulated + (t.running && t.startedAt ? (Date.now() - t.startedAt) / 1000 : 0);
+// ===================== ПРОВЕРКА В БИБЛИОТЕКЕ =====================
+// Сканируем книгу на полке библиотеки — сразу видно, читали её или нет.
+const checkHistory = []; // проверено за этот раз (не сохраняется)
+let pendingIsbn = null;  // «Записать в летопись» из проверки
+
+function normTitle(s) {
+  return String(s || '').toLowerCase().replace(/ß/g, 'ss').replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
 }
 
-let wakeLock = null;
-async function keepAwake(on) {
-  try {
-    if (on && 'wakeLock' in navigator && !wakeLock && document.visibilityState === 'visible') {
-      wakeLock = await navigator.wakeLock.request('screen');
-      wakeLock.addEventListener('release', () => { wakeLock = null; });
-    } else if (!on && wakeLock) {
-      await wakeLock.release();
-      wakeLock = null;
-    }
-  } catch (e) { /* не страшно */ }
-}
-document.addEventListener('visibilitychange', () => {
-  const t = getTimer();
-  if (t && t.running && document.visibilityState === 'visible') keepAwake(true);
-});
-
-let audioCtx = null;
-function chime() {
-  try {
-    audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
-    const notes = [784, 988, 1319];
-    notes.forEach((f, i) => {
-      const o = audioCtx.createOscillator();
-      const g = audioCtx.createGain();
-      o.type = 'sine';
-      o.frequency.value = f;
-      const t0 = audioCtx.currentTime + i * 0.14;
-      g.gain.setValueAtTime(0.0001, t0);
-      g.gain.exponentialRampToValueAtTime(0.25, t0 + 0.02);
-      g.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.5);
-      o.connect(g).connect(audioCtx.destination);
-      o.start(t0);
-      o.stop(t0 + 0.55);
-    });
-  } catch (e) { /* ignore */ }
+function readingLine(b) {
+  const face = FACES.find(f => f.v === b.rating);
+  const who = b.who === 'together' ? 'Читали вместе' : (b.who === 'mama' ? 'Мама' : 'Александра');
+  return [who, fmtDate(b.date), face ? face.label.toLowerCase() : ''].filter(Boolean).join(' · ');
 }
 
-function celebrate(n) {
-  if (navigator.vibrate) navigator.vibrate([120, 60, 120]);
-  chime();
-  const el = document.createElement('div');
-  el.className = 'bead-burst';
-  el.innerHTML = `<span class="bead" style="background:${BEAD_COLORS[(n - 1) % BEAD_COLORS.length]}"></span><b>+1 бусинка!</b>`;
-  document.body.appendChild(el);
-  setTimeout(() => el.remove(), 2300);
+function readingsHtml(list) {
+  return `<div class="list">${list.map(b => `
+    <a class="li" href="#/book/${encodeURIComponent(b.id)}">
+      ${coverHtml(b)}
+      <div class="t"><b>${esc(b.title)}</b><span>${esc(readingLine(b))}</span></div>
+      <span class="who-dot who-${esc(b.who)}"></span>
+    </a>`).join('')}</div>`;
 }
 
-// Общий «тик»: следит за бусинками, даже если открыт другой экран.
-setInterval(() => {
-  const t = getTimer();
-  if (!t || !t.running) return;
-  const beads = Math.floor(elapsed(t) / BEAD_SECONDS);
-  if (beads > (t.beadsShown || 0)) {
-    t.beadsShown = beads;
-    saveTimer(t);
-    celebrate(beads);
+function renderCheckHistory() {
+  const box = $('#chkHistory');
+  if (!box) return;
+  if (checkHistory.length < 2) { box.innerHTML = ''; return; }
+  box.innerHTML = `<h2 class="h2" style="margin:4px 0 8px">Проверено сейчас</h2>
+    <div class="list">${checkHistory.map(h => `
+      <div class="li" style="min-height:52px">
+        <span class="chk-mark ${h.read ? 'read' : 'new'}" aria-hidden="true">${ic(h.read ? 'check' : 'plus')}</span>
+        <div class="t"><b>${esc(h.title || 'ISBN ' + h.isbn)}</b><span>${h.read ? 'уже читали' : 'не читали — можно брать'}</span></div>
+      </div>`).join('')}</div>`;
+}
+
+function rememberCheck(isbn, title, read) {
+  const old = checkHistory.findIndex(h => h.isbn === isbn);
+  if (old >= 0) checkHistory.splice(old, 1);
+  checkHistory.unshift({ isbn, title, read });
+  if (checkHistory.length > 15) checkHistory.pop();
+  renderCheckHistory();
+}
+
+async function checkIsbn(isbn, scanned = false) {
+  const box = $('#chkResult');
+  if (!box) return;
+  const books = (await db.getAll('books')).filter(b => !b.deleted);
+  const exact = books.filter(b => b.isbn === isbn).sort((x, y) => (y.date || '').localeCompare(x.date || ''));
+  if (exact.length) {
+    if (scanned && navigator.vibrate) navigator.vibrate([150, 80, 150]);
+    box.innerHTML = `<div class="card stack chk-card read">
+      <div class="chk-head read">${ic('check')}Уже читали${exact.length > 1 ? ` · ${exact.length} раза` : ''}</div>
+      ${readingsHtml(exact)}
+    </div>`;
+    hydrateCovers(box);
+    rememberCheck(isbn, exact[0].title, true);
+    box.scrollIntoView({ block: 'start', behavior: 'smooth' });
+    return;
   }
-  window.dispatchEvent(new Event('timer-tick'));
-}, 500);
+  if (scanned && navigator.vibrate) navigator.vibrate(60);
+  box.innerHTML = `<div class="card stack chk-card new">
+    <div class="chk-head new">${ic('plus')}Ещё не читали — можно брать!</div>
+    <div id="chkCat" class="row small muted"><span class="spinner"></span>Узнаю название… (ISBN ${esc(isbn)})</div>
+    <div id="chkSimilar"></div>
+    <button class="btn ghost" id="chkAdd">${ic('pen')}Уже прочитали — записать в летопись</button>
+  </div>`;
+  $('#chkAdd').onclick = () => { pendingIsbn = isbn; location.hash = '#/add'; };
+  rememberCheck(isbn, '', false);
+  box.scrollIntoView({ block: 'start', behavior: 'smooth' });
 
-routes.timer = async (r) => {
-  const { books, sessions } = await loadData();
-  let t = getTimer() || newTimer();
-  const preBook = r.q.get('book');
-  if (preBook && !t.running && !t.accumulated) { t.bookId = preBook; saveTimer(t); }
+  // Название из каталога — и проверка, не читали ли то же самое в другом издании
+  const res = await lookupIsbn(isbn, sync.serverLookup).catch(() => null);
+  const cat = $('#chkCat');
+  if (!cat) return;
+  if (!res || !res.found) {
+    cat.innerHTML = `<span>Название не нашлось (нет интернета или книги нет в каталогах). В летописи номера ${esc(isbn)} нет.</span>`;
+    return;
+  }
+  const cover = res.covers[0];
+  cat.className = 'row';
+  cat.style.alignItems = 'center';
+  cat.innerHTML = `<div style="width:56px;flex-shrink:0">${coverHtml({ title: res.title, coverUrl: cover || '' })}</div>
+    <div class="stack" style="gap:2px"><b>${esc(res.title)}</b><span class="small muted">${esc([res.author, res.year].filter(Boolean).join(' · '))}</span></div>`;
+  hydrateCovers(cat);
+  rememberCheck(isbn, res.title, false);
+  const nt = normTitle(res.title);
+  const similar = nt.length >= 5 ? books.filter(b => {
+    const bt = normTitle(b.title);
+    return bt && (bt === nt || (bt.length >= 8 && (bt.includes(nt) || nt.includes(bt))));
+  }) : [];
+  if (similar.length) {
+    const sim = $('#chkSimilar');
+    const card = sim.closest('.chk-card');
+    card.classList.replace('new', 'read');
+    const head = card.querySelector('.chk-head');
+    head.className = 'chk-head read';
+    head.innerHTML = `${ic('check')}Похоже, уже читали — в другом издании`;
+    sim.innerHTML = `<span class="small muted" style="font-weight:700">Штрихкод другой, но название то же:</span>${readingsHtml(similar)}`;
+    hydrateCovers(sim);
+    rememberCheck(isbn, res.title, true);
+  }
+}
 
-  const draw = () => {
-    t = getTimer() || t;
-    const e = elapsed(t);
-    const inCycle = e % BEAD_SECONDS;
-    const left = BEAD_SECONDS - inCycle;
-    const sessionBeads = Math.floor(e / BEAD_SECONDS);
-    const C = 2 * Math.PI * 110;
-    const arc = $('#ringArc');
-    if (arc) arc.setAttribute('stroke-dasharray', `${(C * inCycle / BEAD_SECONDS).toFixed(1)} ${C.toFixed(1)}`);
-    const tm = $('#tTime'); if (tm) tm.textContent = mmss(left);
-    const tl = $('#tTotal'); if (tl) tl.textContent = `Сейчас читаем: ${mmss(e)} · бусинок за этот раз: ${sessionBeads}`;
-    const svg = $('#ringSvg'); if (svg) svg.setAttribute('aria-label', `До следующей бусинки ${mmss(left)}`);
-  };
+async function checkText(q) {
+  const isbn = normalizeIsbn(q);
+  if (isbn) return checkIsbn(isbn);
+  const box = $('#chkResult');
+  const words = normTitle(q).split(' ').filter(w => w.length > 1);
+  if (!words.length) return;
+  const books = (await db.getAll('books')).filter(b => !b.deleted);
+  const found = books.filter(b => {
+    const hay = normTitle(b.title + ' ' + (b.author || ''));
+    return words.every(w => hay.includes(w));
+  }).sort((x, y) => (y.date || '').localeCompare(x.date || ''));
+  box.innerHTML = found.length
+    ? `<div class="card stack chk-card read"><div class="chk-head read">${ic('check')}Нашлось в летописи: ${nBooks(found.length)}</div>${readingsHtml(found)}</div>`
+    : `<div class="card stack chk-card new"><div class="chk-head new">${ic('plus')}В летописи такой книги нет</div>
+        <span class="small muted">Искала «${esc(q)}» в названиях и авторах. Надёжнее сканировать штрихкод.</span></div>`;
+  hydrateCovers(box);
+}
 
-  const whoSessions = (who) => sessions.filter(s => s.who === who);
-  const today = todayStr();
-
-  const render = () => {
-    t = getTimer() || t;
-    const started = t.running || t.accumulated > 0;
-    const hist = whoSessions(t.who);
-    const total = hist.reduce((s, x) => s + (x.beads || 0), 0);
-    const todayBeads = hist.filter(s => s.date === today).reduce((s, x) => s + (x.beads || 0), 0);
-    const live = Math.floor(elapsed(t) / BEAD_SECONDS);
-    const shownTotal = total + live;
-    const slots = Math.max(10, Math.ceil((Math.min(shownTotal, 40) + 1) / 10) * 10);
-    const startIdx = Math.max(0, shownTotal - 40);
-    const C = 2 * Math.PI * 110;
-    const whoLabel = WHO[t.who].label;
-    view.innerHTML = `
-      <div class="top"><h1 class="title-hand">${t.who === 'alexandra' ? 'Александра читает' : 'Мама читает'}</h1></div>
-      <div class="seg" role="group" aria-label="Кто читает">
-        <button data-tw="alexandra" aria-pressed="${t.who === 'alexandra'}" ${started ? 'disabled' : ''}>Александра</button>
-        <button data-tw="mama" aria-pressed="${t.who === 'mama'}" ${started ? 'disabled' : ''}>Мама</button>
-      </div>
-      <label class="field">Книга
-        <select class="input" id="tBook">
-          <option value="">— без книги —</option>
-          ${books.slice(0, 60).map(b => `<option value="${esc(b.id)}" ${b.id === t.bookId ? 'selected' : ''}>${esc(b.title)}${b.author ? ' — ' + esc(b.author) : ''}</option>`).join('')}
-        </select>
-      </label>
-      <div class="timer-wrap">
-        <div class="ring">
-          <svg viewBox="0 0 260 260" id="ringSvg" role="img" aria-label="Таймер">
-            <circle cx="130" cy="130" r="110" fill="#FFFFFF" stroke="#F3D9C8" stroke-width="18"/>
-            <circle id="ringArc" cx="130" cy="130" r="110" fill="none" stroke="var(--alex)" stroke-width="18" stroke-linecap="round" stroke-dasharray="0 ${C.toFixed(1)}" transform="rotate(-90 130 130)"/>
-          </svg>
-          <div class="center"><span class="time" id="tTime">5:00</span><span class="lbl">до бусинки</span></div>
-        </div>
-        <p class="small muted" id="tTotal" style="font-weight:700;text-align:center"></p>
-        <div class="timer-btns">
-          ${t.running ? `<button class="btn secondary big" id="tPause">${PAUSE}Пауза</button>`
-            : `<button class="btn accent big" id="tStart">${PLAY}${started ? 'Дальше' : 'Начать'}</button>`}
-          ${started ? `<button class="btn big" id="tFinish">${ic('check')}Дочитали</button>` : ''}
-        </div>
-      </div>
-      <div class="card stack">
-        <div class="row between"><span class="title-hand" style="font-size:28px">Бусы: ${esc(whoLabel)}</span><span class="small muted" style="font-weight:700">сегодня +${todayBeads + live}</span></div>
-        <div class="necklace" aria-label="${nBeads(shownTotal)}">
-          ${Array.from({ length: slots }, (_, i) => {
-            const n = startIdx + i;
-            return n < shownTotal ? `<span class="bead ${n >= total ? 'pop' : ''}" style="background:${BEAD_COLORS[n % BEAD_COLORS.length]}"></span>` : '<span class="bead hole"></span>';
-          }).join('')}
-        </div>
-        <span class="small muted">Всего ${nBeads(shownTotal)} · 5 минут чтения = 1 бусинка</span>
-      </div>
-    `;
-    $$('[data-tw]').forEach(b => b.onclick = () => { t.who = b.dataset.tw; setPref('timerWho', t.who); saveTimer(t); render(); });
-    $('#tBook').onchange = (e) => { t.bookId = e.target.value; saveTimer(t); };
-    const s = $('#tStart');
-    if (s) s.onclick = () => {
-      if (!t.sessionId) { t.sessionId = db.uid(); t.sessionStart = new Date().toISOString(); }
-      t.running = true;
-      t.startedAt = Date.now();
-      saveTimer(t);
-      keepAwake(true);
-      chime.prime = true;
-      try { audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)(); audioCtx.resume(); } catch (e) { /* ignore */ }
-      render();
-    };
-    const p = $('#tPause');
-    if (p) p.onclick = () => {
-      t.accumulated = elapsed(t);
-      t.running = false;
-      t.startedAt = null;
-      saveTimer(t);
-      keepAwake(false);
-      render();
-    };
-    const f = $('#tFinish');
-    if (f) f.onclick = finish;
-    draw();
-  };
-
-  const finish = async () => {
-    const sec = Math.round(elapsed(t));
-    keepAwake(false);
-    if (sec < 30) {
-      const ok = await confirmModal({ title: 'Меньше минуты', text: 'Такой короткий сеанс не записываем. Сбросить таймер?', ok: 'Сбросить' });
-      if (ok) { saveTimer(null); t = newTimer(); render(); }
-      return;
-    }
-    const beads = Math.floor(sec / BEAD_SECONDS);
-    const book = books.find(b => b.id === t.bookId);
-    const session = {
-      id: t.sessionId || db.uid(),
-      startedAt: t.sessionStart || new Date().toISOString(),
-      date: todayStr(),
-      who: t.who,
-      seconds: sec,
-      beads,
-      bookId: t.bookId || '',
-      bookTitle: book ? book.title : '',
-      dirty: true,
-    };
-    await db.put('sessions', session);
-    sessions.push(session);
-    saveTimer(null);
-    t = newTimer();
-    toast(`Записано: ${Math.round(sec / 60)} мин, ${nBeads(beads)}`, 3500);
-    render();
-    sync.refreshStatus();
-    sync.syncNow();
-  };
-
-  const onTick = () => draw();
-  window.addEventListener('timer-tick', onTick);
-  onLeave(() => window.removeEventListener('timer-tick', onTick));
-  // перерисовать ожерелье, когда появилась новая бусинка
-  let lastBeads = Math.floor(elapsed(t) / BEAD_SECONDS);
-  const onBead = () => {
-    const nb = Math.floor(elapsed(getTimer() || t) / BEAD_SECONDS);
-    if (nb !== lastBeads) { lastBeads = nb; render(); }
-  };
-  window.addEventListener('timer-tick', onBead);
-  onLeave(() => window.removeEventListener('timer-tick', onBead));
-  render();
+routes.check = async () => {
+  view.innerHTML = `
+    <div class="top"><h1 class="title-hand">Читали или нет?</h1></div>
+    <p class="small muted" style="font-weight:700">В библиотеке отсканируйте штрихкод книги — сразу видно, читали ли вы её и когда.</p>
+    <button class="btn accent big" id="chkScan">${ic('barcode')}Сканировать книгу</button>
+    <div id="chkResult"></div>
+    <form class="card stack" id="chkForm">
+      <label class="field" for="chkIn">Или введите ISBN или слова из названия</label>
+      <div class="input-row"><input class="input" id="chkIn" autocomplete="off" placeholder="978… или «kleine Hexe»">
+      <button class="btn" type="submit" aria-label="Проверить">${ic('search')}</button></div>
+    </form>
+    <section id="chkHistory"></section>`;
+  $('#chkScan').onclick = () => openScanner((isbn) => checkIsbn(isbn, true), '#chkIn');
+  if (!cameraAvailable()) $('#chkScan').disabled = true;
+  $('#chkForm').onsubmit = (e) => { e.preventDefault(); const q = $('#chkIn').value.trim(); if (q) checkText(q); };
+  renderCheckHistory();
 };
+routes.timer = () => { location.replace('#/check'); };
 
 // ===================== ЛЕТОПИСЬ =====================
 routes.chronicle = async () => {
-  const { books, sessions } = await loadData();
+  const { books } = await loadData();
   const years = new Map();
   for (const b of books) {
     const y = parseDate(b.date).y || 0;
@@ -1123,14 +1041,14 @@ routes.chronicle = async () => {
       const list = years.get(y);
       const mama = list.filter(b => forWho(b, 'mama'));
       const alex = list.filter(b => forWho(b, 'alexandra'));
-      const beads = sessions.filter(s => s.who === 'alexandra' && parseDate(s.date).y === y).reduce((s, x) => s + (x.beads || 0), 0);
+      const pages = list.reduce((s, b) => s + (Number(b.pages) || 0), 0);
       const mamaPages = mama.reduce((s, b) => s + (Number(b.pages) || 0), 0);
       return `<section class="year">
         <div class="year-head"><h2>${y}</h2><span class="small muted">${nBooks(list.length)}</span></div>
         <div class="year-stats">
           <div class="mini"><b>${mama.length}</b><span>мама</span></div>
           <div class="mini"><b>${alex.length}</b><span>Александра</span></div>
-          <div class="mini"><b>${beads}</b><span>бусинок</span></div>
+          <div class="mini"><b>${pages.toLocaleString('ru-RU')}</b><span>страниц</span></div>
         </div>
         ${mamaPages ? `<p class="small muted">Мама прочитала ${nPages(mamaPages)}</p>` : ''}
         <div class="list">${list.map(b => `
@@ -1140,7 +1058,7 @@ routes.chronicle = async () => {
             <span class="who-dot who-${esc(b.who)}" title="${esc(WHO[b.who].label)}"></span>
           </a>`).join('')}</div>
       </section>`;
-    }).join('') : `<div class="card empty"><p>Здесь книги соберутся по годам: сколько прочитала мама, сколько Александра, сколько бусинок.</p></div>`}
+    }).join('') : `<div class="card empty"><p>Здесь книги соберутся по годам: сколько прочитала мама, сколько Александра, сколько страниц.</p></div>`}
   `;
   hydrateCovers();
 };
@@ -1208,7 +1126,7 @@ routes.settings = async () => {
     </section>
     <section class="card stack">
       <h2 class="h2">В этом телефоне</h2>
-      <p class="small">${nBooks(books.filter(b => !b.deleted).length)} · ${sessions.length} ${plural(sessions.length, 'сеанс', 'сеанса', 'сеансов')} чтения · ${files.length} ${plural(files.length, 'файл', 'файла', 'файлов')}</p>
+      <p class="small">${nBooks(books.filter(b => !b.deleted).length)} · ${files.length} ${plural(files.length, 'файл', 'файла', 'файлов')}</p>
       <p class="small muted">${persisted ? 'Браузер обещал не удалять данные.' : 'Браузер может удалить данные при нехватке места — поэтому важно подключить Google Drive.'}</p>
       <p class="small muted">Версия приложения ${APP_VERSION}</p>
     </section>
@@ -1380,7 +1298,7 @@ window.addEventListener('online', () => sync.syncNow());
     const hadController = !!navigator.serviceWorker.controller;
     let reloaded = false;
     navigator.serviceWorker.addEventListener('controllerchange', () => {
-      if (!hadController || reloaded || draft || (getTimer() || {}).running) return;
+      if (!hadController || reloaded || draft) return;
       reloaded = true;
       location.reload();
     });

@@ -271,3 +271,15 @@ details summary{cursor:pointer;font-weight:800;min-height:44px;display:flex;alig
 .cover-side .btn{font-size:15px;padding:0 10px;min-height:46px}
 .result .cover .ph,.li .cover .ph,.memory .cover .ph{font-size:0}
 .secret{-webkit-text-security:disc;text-security:disc;letter-spacing:.08em}
+
+/* проверка в библиотеке */
+.chk-card.read{box-shadow:inset 0 0 0 3px var(--alex),var(--shadow)}
+.chk-card.new{box-shadow:inset 0 0 0 3px var(--ok),var(--shadow)}
+.chk-head{display:flex;align-items:center;gap:10px;font-size:20px;font-weight:800;line-height:1.2}
+.chk-head svg,.chk-mark svg{width:26px;height:26px;fill:none;stroke:currentColor;stroke-width:2.6;stroke-linecap:round;stroke-linejoin:round;flex-shrink:0}
+.chk-head.read{color:var(--alex)}
+.chk-head.new{color:var(--ok)}
+.chk-mark{width:36px;height:36px;border-radius:50%;display:flex;align-items:center;justify-content:center;flex-shrink:0;color:#fff}
+.chk-mark svg{width:20px;height:20px}
+.chk-mark.read{background:var(--alex)}
+.chk-mark.new{background:var(--ok)}
